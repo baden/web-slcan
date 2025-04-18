@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Serial CANUSB Trace</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; line-height: 1.6; }
+        button { margin: 5px; padding: 8px 15px; cursor: pointer; }
+        button:disabled { cursor: not-allowed; opacity: 0.6; }
+        #status { margin: 15px 0; font-weight: bold; }
+        #messages { margin-top: 20px; max-height: 60vh; overflow-y: auto; border: 1px solid #ccc; padding: 10px; min-height: 100px; background: #f9f9f9; }
+        table { width: 100%; border-collapse: collapse; background: white;}
+        th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-family: monospace; }
+        th { background-color: #e2e2e2; }
+        .timestamp { font-size: 0.8em; color: #555; }
+        .highlight { background-color: #ffffdd !important; }
+        .error { color: red; font-weight: bold; }
+        .status-connected { color: green; }
+        .status-disconnected { color: red; }
+        .status-connecting { color: orange; }
+        .command-note { font-size: 0.9em; color: #444; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <h1>Web Serial CANUSB Trace (500 kbit/s)</h1>
+
+    <p>Connects to a Lawicel CANUSB adapter via Web Serial API.</p>
+    <p><strong>Requires:</strong> Chrome/Edge/Opera, CANUSB VCP drivers installed.</p>
+
+    <div id="controls">
+        <button id="connect-btn">Request Port & Connect</button>
+        <button id="disconnect-btn" disabled>Disconnect</button>
+        <button id="clear-log-btn">Clear Log</button>
+    </div>
+
+    <div id="status">Status: <span id="status-message" class="status-disconnected">Disconnected</span></div>
+
+    <div id="messages">
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>ID</th>
+                    <th>DLC</th>
+                    <th>Data</th>
+                    <!-- <th>Raw</th> -->
+                </tr>
+            </thead>
+            <tbody id="message-body">
+                <!-- Messages will be added here -->
+            </tbody>
+        </table>
+    </div>
+
+    <div class="command-note">
+        Configuration: Serial 115200 baud, CAN 500 kbit/s (S6).
+    </div>
+
+    <script>
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const clearLogBtn = document.getElementById('clear-log-btn');
+        const statusMessage = document.getElementById('status-message');
+        const messageBody = document.getElementById('message-body');
+
+        const BAUD_RATE = 115200;
+        const CAN_BITRATE_CMD = 'S6'; // 500 kbit/s
+        const OPEN_CAN_CMD = 'O';
+        const CLOSE_CAN_CMD = 'C';
+        const CR = '\r'; // Carriage Return character
+
+        let port;
+        let reader;
+        let writer;
+        let keepReading = false;
+        let lineBuffer = '';
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+        let maxMessages = 200; // Limit displayed messages
+
+        // --- UI Update Functions ---
+        function updateStatus(message, connectedState = null) {
+            statusMessage.textContent = message;
+            console.log("Status:", message); // Log status changes
+            if (connectedState === true) {
+                statusMessage.className = 'status-connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else if (connectedState === false) {
+                statusMessage.className = 'status-disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            } else { // Intermediate state (connecting...)
+                statusMessage.className = 'status-connecting';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = true;
+            }
+        }
+
+        function addMessageToTable(msg) {
+             if (!messageBody) return; // Exit if table body doesn't exist
+            const row = messageBody.insertRow(0); // Insert at the top
+            row.classList.add('highlight'); // Add highlight to new row
+
+            const timeCell = row.insertCell();
+            const typeCell = row.insertCell();
+            const idCell = row.insertCell();
+            const dlcCell = row.insertCell();
+            const dataCell = row.insertCell();
+            // const rawCell = row.insertCell(); // Optional raw data cell
+
+            const timestamp = new Date(msg.timestamp); // JS uses milliseconds
+            timeCell.textContent = timestamp.toLocaleTimeString() + '.' + String(timestamp.getMilliseconds()).padStart(3, '0');
+            timeCell.classList.add('timestamp');
+
+            typeCell.textContent = msg.type.toUpperCase();
+            idCell.textContent = msg.id || '---';
+            dlcCell.textContent = msg.dlc !== null ? msg.dlc : '---';
+            dataCell.textContent = msg.data ? msg.data.join(' ') : '---';
+            // rawCell.textContent = msg.raw || ''; // Optional
+
+            if (msg.type === 'error' || msg.type === 'parse_error') {
+                 row.classList.add('error');
+                 dataCell.textContent = msg.raw || msg.message || 'Error';
+            }
+
+             // Remove highlight after a short delay
+            setTimeout(() => row.classList.remove('highlight'), 500);
+
+            // Limit the number of rows
+            while (messageBody.rows.length > maxMessages) {
+                messageBody.deleteRow(-1); // Delete the oldest row (at the bottom)
+            }
+        }
+
+        function parseCanMessage(rawString) {
+            // console.debug("Parsing:", rawString); // Debug raw input
+            const msg = {
+                raw: rawString,
+                type: "unknown",
+                id: null,
+                dlc: null,
+                data: [],
+                timestamp: Date.now()
+            };
+            if (!rawString || rawString.length < 1) return msg;
+
+            try {
+                const msgType = rawString[0];
+                const rest = rawString.substring(1);
+
+                if (msgType === 't') { // Standard Frame
+                    msg.type = 'can_std';
+                    msg.id = rest.substring(0, 3);
+                    msg.dlc = parseInt(rest.substring(3, 4), 10);
+                    const dataStr = rest.substring(4);
+                    if (dataStr.length === msg.dlc * 2) {
+                        msg.data = dataStr.match(/.{1,2}/g) || []; // Split into pairs
+                    } else {
+                        // Handle timestamp if present (logic depends on Zn setting)
+                        // Basic assumption: timestamp is OFF
+                        console.warn(`Length mismatch STD: ${rawString}, DLC: ${msg.dlc}, Data: '${dataStr}'`);
+                        msg.data = dataStr.match(/.{1,2}/g) || [];
+                    }
+                } else if (msgType === 'T') { // Extended Frame
+                    msg.type = 'can_ext';
+                    msg.id = rest.substring(0, 8);
+                    msg.dlc = parseInt(rest.substring(8, 9), 10);
+                    const dataStr = rest.substring(9);
+                     if (dataStr.length === msg.dlc * 2) {
+                        msg.data = dataStr.match(/.{1,2}/g) || []; // Split into pairs
+                    } else {
+                        console.warn(`Length mismatch EXT: ${rawString}, DLC: ${msg.dlc}, Data: '${dataStr}'`);
+                        msg.data = dataStr.match(/.{1,2}/g) || [];
+                    }
+                } else if (msgType === 'r') { // Standard RTR
+                    msg.type = 'rtr_std';
+                    msg.id = rest.substring(0, 3);
+                    msg.dlc = parseInt(rest.substring(3, 4), 10);
+                    msg.data = ['RTR'];
+                } else if (msgType === 'R') { // Extended RTR
+                    msg.type = 'rtr_ext';
+                    msg.id = rest.substring(0, 8);
+                    msg.dlc = parseInt(rest.substring(8, 9), 10);
+                    msg.data = ['RTR'];
+                } else if (msgType === 'F') { // Status flags
+                    msg.type = 'status_flags';
+                    msg.data = [rest]; // Show flags hex value
+                } else if (msgType === 'V') { // Version
+                    msg.type = 'version';
+                    msg.data = [rest]; // Show version string
+                } else if (msgType === 'Z' || msgType === 'z') { // TX Ack
+                    msg.type = 'ack';
+                     msg.data = ['OK'];
+                } else if (rawString === '\x07') { // BELL (Error)
+                    msg.type = 'error_response';
+                    msg.data = ['BELL (Error)'];
+                } else if (rawString === '\r') { // CR (OK)
+                    msg.type = 'ok_response';
+                     msg.data = ['CR (OK)'];
+                } else {
+                    msg.type = 'other';
+                    // console.log("Unknown/Other msg:", rawString);
+                }
+
+            } catch (e) {
+                console.error(`Error parsing message '${rawString}': ${e}`);
+                msg.type = 'parse_error';
+                msg.message = e.message;
+            }
+            return msg;
+        }
+
+
+        // --- Web Serial Functions ---
+
+        async function writeToStream(command) {
+            if (!writer) {
+                console.error("Writer not available.");
+                return;
+            }
+            const data = encoder.encode(command + CR); // Append CR to commands
+            await writer.write(data);
+            console.log("Sent:", command);
+        }
+
+        async function readLoop() {
+            if (!port || !port.readable) {
+                console.error("Port not readable.");
+                keepReading = false;
+                return;
+            }
+            reader = port.readable.getReader();
+            console.log("Read loop started.");
+
+            try {
+                while (keepReading) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        // reader.cancel() has been called.
+                        console.log("Reader done.");
+                        break;
+                    }
+                    if (value) {
+                        lineBuffer += decoder.decode(value, { stream: true });
+                        // Process lines ending with CR
+                        let lines = lineBuffer.split(CR);
+                        // The last part might be incomplete, keep it in the buffer
+                        lineBuffer = lines.pop();
+
+                        lines.forEach(line => {
+                            if (line.trim()) { // Ignore empty lines potentially created by split
+                                const parsedMsg = parseCanMessage(line.trim());
+                                // Only log relevant messages to the table
+                                if (parsedMsg.type.startsWith('can') || parsedMsg.type.startsWith('rtr') || parsedMsg.type === 'status_flags' || parsedMsg.type.includes('error')) {
+                                    addMessageToTable(parsedMsg);
+                                } else {
+                                     console.log("Device Response:", line.trim()); // Log other responses to console
+                                }
+                            } else {
+                                // Received just CR, likely an OK response to a command
+                                console.log("Device Response: CR (OK)");
+                            }
+                        });
+
+                         // Check for BELL character (\x07) which might not have CR
+                         if (lineBuffer.includes('\x07')) {
+                             console.error("Device Response: BELL (Error)");
+                             addMessageToTable(parseCanMessage('\x07')); // Log error
+                             lineBuffer = lineBuffer.replace('\x07', ''); // Remove it
+                         }
+                    }
+                }
+            } catch (error) {
+                console.error("Error in read loop:", error);
+                updateStatus(`Read loop error: ${error.message}`, false);
+            } finally {
+                if (reader) {
+                    // Ensure the reader is released even if the loop crashes
+                     try { await reader.cancel(); } catch (cancelError) { console.warn("Error cancelling reader:", cancelError); }
+                     reader.releaseLock();
+                     reader = null;
+                    console.log("Reader released.");
+                }
+            }
+             console.log("Read loop finished.");
+             // If loop exited unexpectedly while 'keepReading' was true, likely a device issue
+             if (keepReading) {
+                 updateStatus("Disconnected (Read loop ended unexpectedly)", false);
+                 await disconnect(); // Attempt cleanup
+             }
+        }
+
+
+        async function connect() {
+            if (!navigator.serial) {
+                alert("Web Serial API not supported by your browser. Use Chrome, Edge, or Opera.");
+                return;
+            }
+
+            updateStatus("Requesting port...", null);
+
+            try {
+                 // Optionally add filters e.g. { usbVendorId: 0x0403, usbProductId: 0x6001 } for FTDI
+                port = await navigator.serial.requestPort();
+                updateStatus("Port selected, opening...", null);
+
+                await port.open({ baudRate: BAUD_RATE });
+                updateStatus("Port open, configuring CAN...", null);
+
+                // Get writer and reader
+                writer = port.writable.getWriter();
+                // Reader is obtained in readLoop
+
+                // --- Configure CANUSB ---
+                // Small delay to ensure device is ready
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                // 1. Send CR to clear potential pending command/get prompt
+                await writeToStream(''); // Sends just CR
+                await new Promise(resolve => setTimeout(resolve, 50)); // Wait for potential response
+
+                // 2. Set CAN Bitrate (S6 = 500k)
+                await writeToStream(CAN_BITRATE_CMD);
+                await new Promise(resolve => setTimeout(resolve, 50)); // Wait for potential CR response
+
+                // 3. Open CAN Channel
+                await writeToStream(OPEN_CAN_CMD);
+                await new Promise(resolve => setTimeout(resolve, 50)); // Wait for potential CR response
+
+                // TODO: Could add checks here to read back the CR or BELL response
+                // after each command for more robust initialization. This requires
+                // starting the read loop earlier or doing short reads here.
+                // For simplicity, we assume commands succeed for now.
+
+                updateStatus("Connected (500 kbit/s)", true);
+                keepReading = true;
+                readLoop(); // Start reading continuously
+
+            } catch (error) {
+                console.error("Connection failed:", error);
+                updateStatus(`Connection failed: ${error.message}`, false);
+                // Ensure resources are released if connection fails partially
+                if (writer) { try { writer.releaseLock(); writer = null; } catch(e){} }
+                if (reader) { try { await reader.cancel(); reader.releaseLock(); reader = null; } catch(e){} }
+                if (port && port.readable) { port = null; } // Avoid closing if never opened
+                 else if (port) { try { await port.close(); port = null; } catch(e){} }
+            }
+        }
+
+        async function disconnect() {
+            keepReading = false; // Signal read loop to stop
+
+            if (!port) {
+                 updateStatus("Already disconnected", false);
+                return;
+            }
+
+            updateStatus("Disconnecting...", null);
+
+             // 1. Close CAN Channel (Best effort)
+             if (writer) {
+                 try {
+                     await writeToStream(CLOSE_CAN_CMD);
+                     await new Promise(resolve => setTimeout(resolve, 50)); // Short delay
+                 } catch (e) {
+                     console.warn("Error sending close command:", e);
+                 } finally {
+                      // Release writer lock *before* closing port
+                      try { writer.releaseLock(); } catch (e) { console.warn("Error releasing writer lock:", e); }
+                      writer = null;
+                      console.log("Writer released.");
+                 }
+             }
+
+            // 2. Cancel reader and release lock (readLoop should handle this on exit)
+             if (reader) {
+                 try {
+                      // Cancel might already be called by readLoop ending
+                      // await reader.cancel(); // Redundant if loop exited cleanly
+                      // reader.releaseLock(); // Handled in readLoop finally block
+                 } catch (e) {
+                     console.warn("Error during reader cleanup:", e);
+                 }
+                 // Reader variable is cleared in readLoop finally block
+             }
+
+
+            // 3. Close the serial port
+            try {
+                await port.close();
+                console.log("Port closed.");
+            } catch (error) {
+                console.error("Error closing port:", error);
+            } finally {
+                 port = null;
+                 updateStatus("Disconnected", false);
+            }
+        }
+
+
+        // --- Event Listeners ---
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', disconnect);
+        clearLogBtn.addEventListener('click', () => {
+            if (messageBody) messageBody.innerHTML = ''; // Clear the table body
+        });
+
+         // --- Auto-disconnect on page close ---
+         window.addEventListener('beforeunload', async (event) => {
+             if (port) {
+                  console.log("Page closing, attempting to disconnect...");
+                  // Don't prevent unload, just try to clean up quickly
+                  await disconnect();
+             }
+         });
+
+        // Initial state
+        if (!navigator.serial) {
+            updateStatus("Web Serial API not supported by this browser.", false);
+            connectBtn.disabled = true;
+        } else {
+             updateStatus("Disconnected", false);
+        }
+
+    </script>
+</body>
+</html>
