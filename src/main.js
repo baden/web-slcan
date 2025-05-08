@@ -1,9 +1,24 @@
 import './style.css'
 import javascriptLogo from './javascript.svg'
 import viteLogo from '/vite.svg'
-import { setupCounter } from './counter.js'
+// import { setupCounter } from './counter.js' // Not used in this file's current context
 
 import { serial as webSerialPolyfill } from 'web-serial-polyfill';
+import {
+    CAN_BITRATE_CMD,
+    OPEN_CAN_CMD,
+    CLOSE_CAN_CMD,
+    CR_CHAR,
+    parseCanMessage,
+    constructCanFrameCommand,
+    isValidHex
+} from './lawicel.js';
+import {
+    updateStatusUI,
+    addMessageToTableUI,
+    saveDataToFileUI
+    // formatTimestampForFile is used internally by saveDataToFileUI, no need to import directly to main.js
+} from './ui.js';
 
 // const useSerial = true;
 const useSerial = ('serial' in navigator);
@@ -26,13 +41,10 @@ const messageBody = document.getElementById('message-body');
 const VENDOR_ID = 0x0483;
 const PRODUCT_ID = 0x5740;
 
-// Lawicel Commands
+// Serial Port Config
 const BAUD_RATE = 115200;
-const CAN_BITRATE_CMD = 'S6';
-const OPEN_CAN_CMD = 'O';
-const CLOSE_CAN_CMD = 'C';
-const CR_CHAR = '\r';
-const CR_BYTE = 0x0D;
+// Lawicel command constants (CAN_BITRATE_CMD, OPEN_CAN_CMD, CLOSE_CAN_CMD, CR_CHAR, CR_BYTE)
+// are now imported from lawicel.js. CR_BYTE is not explicitly used in main.js anymore.
 
 let port;
 let reader;
@@ -45,81 +57,24 @@ const decoder = new TextDecoder();
 let maxMessagesInTable = 200;
 let loggedMessages = [];
 
-// --- UI Update Functions (mostly same) ---
-function updateStatus(message, connectedState = null) {
-    statusMessage.textContent = message;
-    console.log("Status:", message);
-    if (connectedState === true) {
-        statusMessage.className = 'status-connected';
-        connectBtn.disabled = true;
-        disconnectBtn.disabled = false;
-        saveBtn.disabled = false;
-        clearLogBtn.disabled = false;
-        sendCanBtn.disabled = false;
-        // canMessageInput.disabled = false; // Old input
-        canIdInput.disabled = false;
-        canDlcInput.disabled = false;
-        canDataInput.disabled = false;
-    } else if (connectedState === false) {
-        statusMessage.className = 'status-disconnected';
-        connectBtn.disabled = false;
-        disconnectBtn.disabled = true;
-        saveBtn.disabled = (loggedMessages.length === 0);
-        clearLogBtn.disabled = (loggedMessages.length === 0);
-        sendCanBtn.disabled = true;
-        // canMessageInput.disabled = true; // Old input
-        canIdInput.disabled = true;
-        canDlcInput.disabled = true;
-        canDataInput.disabled = true;
-    } else { // connecting
-        statusMessage.className = 'status-connecting';
-        connectBtn.disabled = true;
-        disconnectBtn.disabled = true;
-        saveBtn.disabled = true;
-        clearLogBtn.disabled = true;
-        sendCanBtn.disabled = true;
-        // canMessageInput.disabled = true; // Old input
-        canIdInput.disabled = true;
-        canDlcInput.disabled = true;
-        canDataInput.disabled = true;
-    }
-}
-
-function addMessageToTable(msg) { /* ... same ... */
-    if (!messageBody) return;
-    const row = messageBody.insertRow(0); row.classList.add('highlight');
-    const tc = row.insertCell(), tyc = row.insertCell(), idc = row.insertCell(), dlcc = row.insertCell(), dc = row.insertCell();
-    const ts = new Date(msg.timestamp); tc.textContent = ts.toLocaleTimeString() + '.' + String(ts.getMilliseconds()).padStart(3, '0'); tc.classList.add('timestamp');
-    tyc.textContent = msg.type.toUpperCase(); idc.textContent = msg.id || '---'; dlcc.textContent = msg.dlc !== null ? msg.dlc : '---'; dc.textContent = msg.data ? msg.data.join(' ') : '---';
-    if (msg.type === 'error' || msg.type === 'parse_error') { row.classList.add('error'); dc.textContent = msg.raw || msg.message || 'Error';}
-    setTimeout(() => row.classList.remove('highlight'), 500); while (messageBody.rows.length > maxMessagesInTable) { messageBody.deleteRow(-1); }
-}
-
-function parseCanMessage(rawString) { /* ... same ... */
-    const msg = { raw: rawString, type: "unknown", id: null, dlc: null, data: [], timestamp: Date.now() }; if (!rawString || rawString.length < 1) return msg;
-    try {
-        const mt = rawString[0]; const r = rawString.substring(1);
-        if (mt === 't') { msg.type = 'can_std'; msg.id = r.substring(0, 3); msg.dlc = parseInt(r.substring(3, 4), 10); const dS = r.substring(4); if (!isNaN(msg.dlc) && dS.length >= msg.dlc * 2) { msg.data = (dS.substring(0, msg.dlc * 2)).match(/.{1,2}/g) || []; } else { msg.data = dS.match(/.{1,2}/g) || [];}}
-        else if (mt === 'T') { msg.type = 'can_ext'; msg.id = r.substring(0, 8); msg.dlc = parseInt(r.substring(8, 9), 10); const dS = r.substring(9); if (!isNaN(msg.dlc) && dS.length >= msg.dlc * 2) { msg.data = (dS.substring(0, msg.dlc * 2)).match(/.{1,2}/g) || []; } else { msg.data = dS.match(/.{1,2}/g) || [];}}
-        else if (mt === 'r') { msg.type = 'rtr_std'; msg.id = r.substring(0, 3); msg.dlc = parseInt(r.substring(3, 4), 10); msg.data = ['RTR'];}
-        else if (mt === 'R') { msg.type = 'rtr_ext'; msg.id = r.substring(0, 8); msg.dlc = parseInt(r.substring(8, 9), 10); msg.data = ['RTR'];}
-        else if (mt === 'F') { msg.type = 'status_flags'; msg.data = [r]; } else if (mt === 'V') { msg.type = 'version'; msg.data = [r]; }
-        else if (mt === 'Z' || mt === 'z') { msg.type = 'ack'; msg.data = ['OK']; } else if (rawString === '\x07') { msg.type = 'error_response'; msg.data = ['BELL (Error)']; }
-        else if (rawString === '\r') { msg.type = 'ok_response'; msg.data = ['CR (OK)']; } else { msg.type = 'other';}
-    } catch (e) { console.error(`Parse error '${rawString}': ${e}`); msg.type = 'parse_error'; msg.message = e.message; } return msg;
-}
-function formatTimestampForFile(tsMs) { /* ... same ... */ const d = new Date(tsMs); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`; }
-function saveDataToFile() { /* ... same ... */
-    if (loggedMessages.length === 0) { alert("No messages to save."); saveBtn.disabled = true; return; } const h = "Timestamp,Type,ID,DLC,Data\n";
-    const rs = loggedMessages.map(m => { const ts = formatTimestampForFile(m.timestamp); const ty = m.type.toUpperCase(); const id = m.id || ''; const dl = m.dlc !== null ? m.dlc : ''; const da = m.data ? m.data.join(' ') : ''; const esc = (f) => (String(f).includes(',') ? `"${String(f).replace(/"/g, '""')}"` : f); return `${esc(ts)},${esc(ty)},${esc(id)},${esc(dl)},${esc(da)}`; }).join('\n');
-    const c = h + rs; const b = new Blob([c], { type: 'text/csv;charset=utf-8;' }); const l = document.createElement("a"); const u = URL.createObjectURL(b); l.setAttribute("href", u); const n = new Date(); const fn = `can_trace_webusb_${n.getFullYear()}${String(n.getMonth() + 1).padStart(2, '0')}${String(n.getDate()).padStart(2, '0')}_${String(n.getHours()).padStart(2, '0')}${String(n.getMinutes()).padStart(2, '0')}${String(n.getSeconds()).padStart(2, '0')}.csv`; l.setAttribute("download", fn); l.style.visibility = 'hidden'; document.body.appendChild(l); l.click(); document.body.removeChild(l); URL.revokeObjectURL(u);
-}
+// UI Update Functions are now imported from ui.js
+// function updateStatus(...) { ... } // REMOVED
+// function addMessageToTable(...) { ... } // REMOVED
+// function formatTimestampForFile(...) { ... } // REMOVED
+// function saveDataToFile(...) { ... } // REMOVED
 
 
 async function writeToStream(command) {
     if (!writer) {
         console.error("Writer not available.");
-        updateStatus("Error: Writer not available.", port ? port.readable !== null : false); // Update status reflecting current connection
+        // Call imported UI function
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Error: Writer not available.",
+            port ? port.readable !== null : false,
+            loggedMessages.length
+        );
         return;
     }
     // Basic validation for CAN message format (e.g., t1238aabbccdd)
@@ -143,78 +98,75 @@ async function writeToStream(command) {
     // For sent messages, we can construct a similar object or log raw.
     // For now, let's add a simple "sent" type message.
     // A more robust solution would be to parse the command we just built.
+    // parseCanMessage is imported.
     const sentMsgPseudo = parseCanMessage(command); // Attempt to parse for display
-    if (sentMsgPseudo.type === "unknown" || sentMsgPseudo.type === "other") { // If parseCanMessage didn't fully understand it as a CAN frame
-        addMessageToTable({
+    // Call imported UI function
+    if (sentMsgPseudo.type === "unknown" || sentMsgPseudo.type === "other" || sentMsgPseudo.type === "parse_error") {
+        addMessageToTableUI(messageBody, {
             raw: command,
-            type: "sent_cmd", // Custom type for sent commands
-            id: null,
-            dlc: null,
-            data: [command],
+            type: "sent_cmd",
+            id: sentMsgPseudo.id || null,
+            dlc: sentMsgPseudo.dlc || null,
+            data: sentMsgPseudo.data && sentMsgPseudo.data.length > 0 ? sentMsgPseudo.data : [command],
             timestamp: Date.now()
-        });
+        }, maxMessagesInTable);
     } else {
-         // If it was parsable as a CAN frame (e.g. t1234ABCD), show it properly
-        addMessageToTable({ ...sentMsgPseudo, type: `sent_${sentMsgPseudo.type}`});
+        addMessageToTableUI(messageBody, { ...sentMsgPseudo, type: `sent_${sentMsgPseudo.type}`}, maxMessagesInTable);
     }
 }
 
-function isValidHex(str, len = -1) {
-    if (typeof str !== 'string') return false;
-    const hexRegex = /^[0-9a-fA-F]+$/;
-    if (!hexRegex.test(str)) return false;
-    if (len !== -1 && str.length !== len) return false;
-    return true;
-}
+// isValidHex is now imported from lawicel.js
+// function isValidHex(str, len = -1) { ... } // REMOVED
 
 async function sendCanMessageFromInput() {
     const idStr = canIdInput.value.trim();
     const dlcStr = canDlcInput.value.trim();
     const dataStr = canDataInput.value.trim().replace(/\s/g, ''); // Remove spaces from data
 
-    // Validate ID
+    const dlcNum = parseInt(dlcStr, 10);
+
+    // Validate ID (length 3, hex) using imported isValidHex
     if (!isValidHex(idStr, 3)) {
-        addMessageToTable({ type: "error", message: "Invalid CAN ID: Must be 3 hex characters.", timestamp: Date.now() });
+        addMessageToTableUI(messageBody, { type: "error", message: "Invalid CAN ID: Must be 3 hex characters.", timestamp: Date.now() }, maxMessagesInTable);
         console.warn("Invalid CAN ID:", idStr);
         return;
     }
-
-    // Validate DLC
-    const dlcNum = parseInt(dlcStr, 10); // DLC input is type number, but value is string
+    // Validate DLC (numeric, 0-8)
     if (isNaN(dlcNum) || dlcNum < 0 || dlcNum > 8) {
-        addMessageToTable({ type: "error", message: "Invalid CAN DLC: Must be a number 0-8.", timestamp: Date.now() });
+        addMessageToTableUI(messageBody, { type: "error", message: "Invalid CAN DLC: Must be a number 0-8.", timestamp: Date.now() }, maxMessagesInTable);
         console.warn("Invalid CAN DLC:", dlcStr);
         return;
     }
-    const dlcHex = dlcNum.toString(16).toUpperCase(); // Convert to single hex char for command
-
-    // Validate Data
-    if (dataStr.length !== dlcNum * 2) {
-        addMessageToTable({ type: "error", message: `Invalid CAN Data: Length must be ${dlcNum * 2} hex characters for DLC ${dlcNum}.`, timestamp: Date.now() });
-        console.warn("Invalid CAN Data length:", dataStr);
-        return;
-    }
-    if (dlcNum > 0 && !isValidHex(dataStr)) { // only validate if data is expected
-        addMessageToTable({ type: "error", message: "Invalid CAN Data: Must be hex characters.", timestamp: Date.now() });
-        console.warn("Invalid CAN Data content:", dataStr);
+    // Validate Data (hex, length matches DLC*2) using imported isValidHex
+    if (!isValidHex(dataStr, dlcNum * 2)) {
+        addMessageToTableUI(messageBody, { type: "error", message: `Invalid CAN Data: Must be ${dlcNum*2} hex characters for DLC ${dlcNum}.`, timestamp: Date.now() }, maxMessagesInTable);
+        console.warn("Invalid CAN Data:", dataStr, "DLC:", dlcNum);
         return;
     }
 
-    // Construct Lawicel command (assuming standard 't' frame for now)
-    // tIIILDD...
-    const command = `t${idStr.toUpperCase()}${dlcHex}${dataStr.toUpperCase()}`;
+    // Construct Lawicel command using imported constructCanFrameCommand
+    // Assuming standard 't' frame for now (isExtended = false)
+    const command = constructCanFrameCommand(idStr, dlcNum, dataStr, false);
 
-    await writeToStream(command);
-
-    // Optionally clear inputs after sending
-    // canIdInput.value = '';
-    // canDlcInput.value = '';
-    // canDataInput.value = '';
+    if (command) {
+        await writeToStream(command);
+        // Optionally clear inputs after sending
+        // canIdInput.value = '';
+        // canDlcInput.value = '';
+        // canDataInput.value = '';
+    } else {
+        // This case should ideally be caught by the more specific validation above,
+        // but constructCanFrameCommand also returns null on error if its internal checks fail.
+        addMessageToTableUI(messageBody, { type: "error", message: "Failed to construct CAN command. Check inputs.", timestamp: Date.now() }, maxMessagesInTable);
+        console.error("Failed to construct CAN command with inputs:", idStr, dlcNum, dataStr);
+    }
 }
 
 async function readLoop() {
     if (!port || !port.readable) {
         console.error("Port not readable.");
+        // Potentially update status here if desired, though connect/disconnect handles major states
+        // updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, "Error: Port not readable", false, loggedMessages.length);
         keepReading = false;
         return;
     }
@@ -238,10 +190,10 @@ async function readLoop() {
 
                 lines.forEach(line => {
                     if (line.trim()) { // Ignore empty lines potentially created by split
-                        const parsedMsg = parseCanMessage(line.trim());
+                        const parsedMsg = parseCanMessage(line.trim()); // Imported from lawicel.js
                         // Only log relevant messages to the table
                         if (parsedMsg.type.startsWith('can') || parsedMsg.type.startsWith('rtr') || parsedMsg.type === 'status_flags' || parsedMsg.type.includes('error')) {
-                            addMessageToTable(parsedMsg);
+                            addMessageToTableUI(messageBody, parsedMsg, maxMessagesInTable);
                         } else {
                               console.log("Device Response:", line.trim()); // Log other responses to console
                         }
@@ -254,14 +206,20 @@ async function readLoop() {
                   // Check for BELL character (\x07) which might not have CR
                   if (lineBuffer.includes('\x07')) {
                       console.error("Device Response: BELL (Error)");
-                      addMessageToTable(parseCanMessage('\x07')); // Log error
+                      addMessageToTableUI(messageBody, parseCanMessage('\x07'), maxMessagesInTable); // Log error
                       lineBuffer = lineBuffer.replace('\x07', ''); // Remove it
                   }
             }
         }
     } catch (error) {
         console.error("Error in read loop:", error);
-        updateStatus(`Read loop error: ${error.message}`, false);
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            `Read loop error: ${error.message}`,
+            false,
+            loggedMessages.length
+        );
     } finally {
         if (reader) {
             // Ensure the reader is released even if the loop crashes
@@ -274,13 +232,25 @@ async function readLoop() {
       console.log("Read loop finished.");
       // If loop exited unexpectedly while 'keepReading' was true, likely a device issue
       if (keepReading) {
-          updateStatus("Disconnected (Read loop ended unexpectedly)", false);
+          updateStatusUI(
+              statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+              canIdInput, canDlcInput, canDataInput,
+              "Disconnected (Read loop ended unexpectedly)",
+              false,
+              loggedMessages.length
+          );
           await disconnect(); // Attempt cleanup
       }
 }
 
 async function connect() {
-    updateStatus("Requesting port...", null);
+    updateStatusUI(
+        statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+        canIdInput, canDlcInput, canDataInput,
+        "Requesting port...",
+        null, // connecting state
+        loggedMessages.length
+    );
     try {
         const filters = [{ usbVendorId: VENDOR_ID, usbProductId: PRODUCT_ID }];
         port = await serial.requestPort({ filters });
@@ -288,7 +258,13 @@ async function connect() {
         console.log("Port selected:", port);
 
         await port.open({ baudRate: BAUD_RATE });
-        updateStatus("Port open, configuring CAN...", null);
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Port open, configuring CAN...",
+            null, // connecting state
+            loggedMessages.length
+        );
 
         // Get writer and reader
         writer = port.writable.getWriter();
@@ -315,12 +291,24 @@ async function connect() {
         // starting the read loop earlier or doing short reads here.
         // For simplicity, we assume commands succeed for now.
 
-        updateStatus("Connected (500 kbit/s)", true);
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Connected (500 kbit/s)",
+            true,
+            loggedMessages.length
+        );
         keepReading = true;
-        readLoop(); // Start reading continuously        
+        readLoop(); // Start reading continuously
     } catch (error) {
         console.error("Connection failed:", error);
-        updateStatus(`Connection failed: ${error.message}`, false);
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            `Connection failed: ${error.message}`,
+            false,
+            loggedMessages.length
+        );
         // Ensure resources are released if connection fails partially
         if (writer) { try { writer.releaseLock(); writer = null; } catch(e){} }
         if (reader) { try { await reader.cancel(); reader.releaseLock(); reader = null; } catch(e){} }
@@ -330,14 +318,26 @@ async function connect() {
 }
 
 async function disconnect() {
-  keepReading = false; // Signal read loop to stop
+    keepReading = false; // Signal read loop to stop
 
-  if (!port) {
-        updateStatus("Already disconnected", false);
-      return;
-  }
+    if (!port) {
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Already disconnected",
+            false,
+            loggedMessages.length
+        );
+        return;
+    }
 
-  updateStatus("Disconnecting...", null);
+    updateStatusUI(
+        statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+        canIdInput, canDlcInput, canDataInput,
+        "Disconnecting...",
+        null, // connecting state (or a dedicated 'disconnecting' state if desired)
+        loggedMessages.length
+    );
 
     // 1. Close CAN Channel (Best effort)
     if (writer) {
@@ -368,35 +368,59 @@ async function disconnect() {
 
 
   // 3. Close the serial port
-  try {
-      await port.close();
-      console.log("Port closed.");
-  } catch (error) {
-      console.error("Error closing port:", error);
-  } finally {
+    try {
+        await port.close();
+        console.log("Port closed.");
+    } catch (error) {
+        console.error("Error closing port:", error);
+    } finally {
         port = null;
-        updateStatus("Disconnected", false);
-  }
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Disconnected",
+            false,
+            loggedMessages.length // loggedMessages might have content to save
+        );
+    }
 }
 
 // --- Event Listeners & Init ---
 connectBtn.addEventListener('click', connect);
 disconnectBtn.addEventListener('click', disconnect);
+
 clearLogBtn.addEventListener('click', () => {
-    if (messageBody) messageBody.innerHTML = ''; loggedMessages = [];
-    console.log("Log cleared."); saveBtn.disabled = true; clearLogBtn.disabled = true;
+    if (messageBody) messageBody.innerHTML = '';
+    loggedMessages = [];
+    console.log("Log cleared.");
+    // Update button states directly or via updateStatusUI
+    saveBtn.disabled = true;
+    clearLogBtn.disabled = true;
+    // If disconnected, updateStatusUI would handle this. If connected, this is fine.
 });
-saveBtn.addEventListener('click', saveDataToFile);
+
+saveBtn.addEventListener('click', () => saveDataToFileUI(loggedMessages, saveBtn));
 sendCanBtn.addEventListener('click', sendCanMessageFromInput);
 
-window.addEventListener('beforeunload', async () => { if (port && port.readable) { await disconnect(); } }); // Check port.readable as a proxy for open port
+window.addEventListener('beforeunload', async () => { if (port && port.readable) { await disconnect(); } });
 
 document.addEventListener('DOMContentLoaded', () => {
-      const isSerialSupported = ('serial' in navigator || 'usb' in navigator); 
-      if (!isSerialSupported) {
-          updateStatus("Web Serial API not supported.", false);
-          // All controls including new inputs will be disabled by updateStatus
-      } else {
-          updateStatus("Disconnected", false); // Initial state
-      }
+    const isSerialSupported = ('serial' in navigator || 'usb' in navigator);
+    if (!isSerialSupported) {
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Web Serial API not supported.",
+            false,
+            0 // No logged messages initially
+        );
+    } else {
+        updateStatusUI(
+            statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+            canIdInput, canDlcInput, canDataInput,
+            "Disconnected",
+            false, // Initial state
+            0 // No logged messages initially
+        );
+    }
 });
