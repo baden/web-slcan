@@ -56,8 +56,8 @@ const kDefaultPolyfillOptions = {
   usbControlInterfaceClass: 2,
   usbTransferInterfaceClass: 10
 };
-function findInterface(device2, classCode) {
-  const configuration = device2.configurations[0];
+function findInterface(device, classCode) {
+  const configuration = device.configurations[0];
   for (const iface of configuration.interfaces) {
     const alternate = iface.alternates[0];
     if (alternate.interfaceClass === classCode) {
@@ -84,9 +84,9 @@ class UsbEndpointUnderlyingSource {
    * @param {USBEndpoint} endpoint
    * @param {function} onError function to be called on error
    */
-  constructor(device2, endpoint, onError) {
+  constructor(device, endpoint, onError) {
     this.type = "bytes";
-    this.device_ = device2;
+    this.device_ = device;
     this.endpoint_ = endpoint;
     this.onError_ = onError;
   }
@@ -131,8 +131,8 @@ class UsbEndpointUnderlyingSink {
    * @param {USBEndpoint} endpoint
    * @param {function} onError function to be called on error
    */
-  constructor(device2, endpoint, onError) {
-    this.device_ = device2;
+  constructor(device, endpoint, onError) {
+    this.device_ = device;
     this.endpoint_ = endpoint;
     this.onError_ = onError;
   }
@@ -162,14 +162,14 @@ class SerialPort {
    * @param {SerialPolyfillOptions} polyfillOptions Optional options to
    * configure the polyfill.
    */
-  constructor(device2, polyfillOptions) {
+  constructor(device, polyfillOptions) {
     this.polyfillOptions_ = Object.assign(Object.assign({}, kDefaultPolyfillOptions), polyfillOptions);
     this.outputSignals_ = {
       dataTerminalReady: false,
       requestToSend: false,
       break: false
     };
-    this.device_ = device2;
+    this.device_ = device;
     this.controlInterface_ = findInterface(this.device_, this.polyfillOptions_.usbControlInterfaceClass);
     this.transferInterface_ = findInterface(this.device_, this.polyfillOptions_.usbTransferInterfaceClass);
     this.inEndpoint_ = findEndpoint(this.transferInterface_, "in");
@@ -431,8 +431,8 @@ class Serial {
         classCode: polyfillOptions.usbControlInterfaceClass
       });
     }
-    const device2 = await navigator.usb.requestDevice({ "filters": usbFilters });
-    const port2 = new SerialPort(device2, polyfillOptions);
+    const device = await navigator.usb.requestDevice({ "filters": usbFilters });
+    const port2 = new SerialPort(device, polyfillOptions);
     return port2;
   }
   /**
@@ -447,9 +447,9 @@ class Serial {
     polyfillOptions = Object.assign(Object.assign({}, kDefaultPolyfillOptions), polyfillOptions);
     const devices = await navigator.usb.getDevices();
     const ports = [];
-    devices.forEach((device2) => {
+    devices.forEach((device) => {
       try {
-        const port2 = new SerialPort(device2, polyfillOptions);
+        const port2 = new SerialPort(device, polyfillOptions);
         ports.push(port2);
       } catch (e) {
       }
@@ -458,75 +458,10 @@ class Serial {
   }
 }
 const serial$1 = new Serial();
-const useSerial = "serial" in navigator;
-const serial = useSerial ? navigator.serial : serial$1;
-const connectBtn = document.getElementById("connect-btn");
-console.log("connectBtn", connectBtn);
-const disconnectBtn = document.getElementById("disconnect-btn");
-const clearLogBtn = document.getElementById("clear-log-btn");
-const saveBtn = document.getElementById("save-btn");
-const statusMessage = document.getElementById("status-message");
-const messageBody = document.getElementById("message-body");
-const VENDOR_ID = 1155;
-const PRODUCT_ID = 22336;
-const BAUD_RATE = 115200;
 const CAN_BITRATE_CMD = "S6";
 const OPEN_CAN_CMD = "O";
 const CLOSE_CAN_CMD = "C";
 const CR_CHAR = "\r";
-let port;
-let reader;
-let writer;
-let keepReading = false;
-let lineBuffer = "";
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-let maxMessagesInTable = 200;
-let loggedMessages = [];
-function updateStatus(message, connectedState = null) {
-  statusMessage.textContent = message;
-  console.log("Status:", message);
-  if (connectedState === true) {
-    statusMessage.className = "status-connected";
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = false;
-    saveBtn.disabled = false;
-    clearLogBtn.disabled = false;
-  } else if (connectedState === false) {
-    statusMessage.className = "status-disconnected";
-    connectBtn.disabled = false;
-    disconnectBtn.disabled = true;
-    saveBtn.disabled = loggedMessages.length === 0;
-    clearLogBtn.disabled = loggedMessages.length === 0;
-  } else {
-    statusMessage.className = "status-connecting";
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = true;
-    saveBtn.disabled = true;
-    clearLogBtn.disabled = true;
-  }
-}
-function addMessageToTable(msg) {
-  if (!messageBody) return;
-  const row = messageBody.insertRow(0);
-  row.classList.add("highlight");
-  const tc = row.insertCell(), tyc = row.insertCell(), idc = row.insertCell(), dlcc = row.insertCell(), dc = row.insertCell();
-  const ts = new Date(msg.timestamp);
-  tc.textContent = ts.toLocaleTimeString() + "." + String(ts.getMilliseconds()).padStart(3, "0");
-  tc.classList.add("timestamp");
-  tyc.textContent = msg.type.toUpperCase();
-  idc.textContent = msg.id || "---";
-  dlcc.textContent = msg.dlc !== null ? msg.dlc : "---";
-  dc.textContent = msg.data ? msg.data.join(" ") : "---";
-  if (msg.type === "error" || msg.type === "parse_error") {
-    row.classList.add("error");
-    dc.textContent = msg.raw || msg.message || "Error";
-  }
-  setTimeout(() => row.classList.remove("highlight"), 500);
-  while (messageBody.rows.length > maxMessagesInTable) {
-    messageBody.deleteRow(-1);
-  }
-}
 function parseCanMessage(rawString) {
   const msg = { raw: rawString, type: "unknown", id: null, dlc: null, data: [], timestamp: Date.now() };
   if (!rawString || rawString.length < 1) return msg;
@@ -537,21 +472,21 @@ function parseCanMessage(rawString) {
       msg.type = "can_std";
       msg.id = r.substring(0, 3);
       msg.dlc = parseInt(r.substring(3, 4), 10);
-      const dS = r.substring(4);
-      if (!isNaN(msg.dlc) && dS.length >= msg.dlc * 2) {
-        msg.data = dS.substring(0, msg.dlc * 2).match(/.{1,2}/g) || [];
+      const dataString = r.substring(4);
+      if (!isNaN(msg.dlc) && dataString.length >= msg.dlc * 2) {
+        msg.data = dataString.substring(0, msg.dlc * 2).match(/.{1,2}/g) || [];
       } else {
-        msg.data = dS.match(/.{1,2}/g) || [];
+        msg.data = dataString.match(/.{1,2}/g) || [];
       }
     } else if (mt === "T") {
       msg.type = "can_ext";
       msg.id = r.substring(0, 8);
       msg.dlc = parseInt(r.substring(8, 9), 10);
-      const dS = r.substring(9);
-      if (!isNaN(msg.dlc) && dS.length >= msg.dlc * 2) {
-        msg.data = dS.substring(0, msg.dlc * 2).match(/.{1,2}/g) || [];
+      const dataString = r.substring(9);
+      if (!isNaN(msg.dlc) && dataString.length >= msg.dlc * 2) {
+        msg.data = dataString.substring(0, msg.dlc * 2).match(/.{1,2}/g) || [];
       } else {
-        msg.data = dS.match(/.{1,2}/g) || [];
+        msg.data = dataString.match(/.{1,2}/g) || [];
       }
     } else if (mt === "r") {
       msg.type = "rtr_std";
@@ -572,64 +507,250 @@ function parseCanMessage(rawString) {
     } else if (mt === "Z" || mt === "z") {
       msg.type = "ack";
       msg.data = ["OK"];
-    } else if (rawString === "\x07") {
+    } else if (rawString === String.fromCharCode(7)) {
       msg.type = "error_response";
       msg.data = ["BELL (Error)"];
-    } else if (rawString === "\r") {
+    } else if (rawString === CR_CHAR) {
       msg.type = "ok_response";
       msg.data = ["CR (OK)"];
     } else {
       msg.type = "other";
+      msg.data = [rawString];
     }
   } catch (e) {
-    console.error(`Parse error '${rawString}': ${e}`);
+    console.error(`Parse error for Lawicel message '${rawString}': ${e}`);
     msg.type = "parse_error";
     msg.message = e.message;
   }
   return msg;
 }
+function constructCanFrameCommand(id, dlc, dataHex, isExtended = false) {
+  const idUpper = id.toUpperCase();
+  const dataUpper = dataHex.toUpperCase();
+  if (typeof dlc !== "number" || dlc < 0 || dlc > 8) return null;
+  if (isExtended && (idUpper.length !== 8 || !/^[0-9A-F]{8}$/.test(idUpper))) return null;
+  if (!isExtended && (idUpper.length !== 3 || !/^[0-9A-F]{3}$/.test(idUpper))) return null;
+  if (dataUpper.length !== dlc * 2 || dlc > 0 && !/^[0-9A-F]*$/.test(dataUpper)) return null;
+  const dlcHex = dlc.toString(16).toUpperCase();
+  const commandPrefix = isExtended ? "T" : "t";
+  return `${commandPrefix}${idUpper}${dlcHex}${dataUpper}`;
+}
+function isValidHex(str, len = -1) {
+  if (typeof str !== "string") return false;
+  if (len === 0 && str === "") return true;
+  const hexRegex = /^[0-9a-fA-F]+$/;
+  if (!hexRegex.test(str)) return false;
+  if (len !== -1 && str.length !== len) return false;
+  return true;
+}
+function updateStatusUI(statusMessageEl, connectBtnEl, disconnectBtnEl, saveBtnEl, clearLogBtnEl, sendCanBtnEl, canIdInputEl, canDlcInputEl, canDataInputEl, message, connectedState = null, loggedMessagesCount = 0) {
+  if (statusMessageEl) statusMessageEl.textContent = message;
+  console.log("Status:", message);
+  if (connectedState === true) {
+    if (statusMessageEl) statusMessageEl.className = "status-connected";
+    if (connectBtnEl) connectBtnEl.disabled = true;
+    if (disconnectBtnEl) disconnectBtnEl.disabled = false;
+    if (saveBtnEl) saveBtnEl.disabled = false;
+    if (clearLogBtnEl) clearLogBtnEl.disabled = false;
+    if (sendCanBtnEl) sendCanBtnEl.disabled = false;
+    if (canIdInputEl) canIdInputEl.disabled = false;
+    if (canDlcInputEl) canDlcInputEl.disabled = false;
+    if (canDataInputEl) canDataInputEl.disabled = false;
+  } else if (connectedState === false) {
+    if (statusMessageEl) statusMessageEl.className = "status-disconnected";
+    if (connectBtnEl) connectBtnEl.disabled = false;
+    if (disconnectBtnEl) disconnectBtnEl.disabled = true;
+    if (saveBtnEl) saveBtnEl.disabled = loggedMessagesCount === 0;
+    if (clearLogBtnEl) clearLogBtnEl.disabled = loggedMessagesCount === 0;
+    if (sendCanBtnEl) sendCanBtnEl.disabled = true;
+    if (canIdInputEl) canIdInputEl.disabled = true;
+    if (canDlcInputEl) canDlcInputEl.disabled = true;
+    if (canDataInputEl) canDataInputEl.disabled = true;
+  } else {
+    if (statusMessageEl) statusMessageEl.className = "status-connecting";
+    if (connectBtnEl) connectBtnEl.disabled = true;
+    if (disconnectBtnEl) disconnectBtnEl.disabled = true;
+    if (saveBtnEl) saveBtnEl.disabled = true;
+    if (clearLogBtnEl) clearLogBtnEl.disabled = true;
+    if (sendCanBtnEl) sendCanBtnEl.disabled = true;
+    if (canIdInputEl) canIdInputEl.disabled = true;
+    if (canDlcInputEl) canDlcInputEl.disabled = true;
+    if (canDataInputEl) canDataInputEl.disabled = true;
+  }
+}
+function addMessageToTableUI(messageBodyEl, msg, maxMessagesInTable2 = 200) {
+  if (!messageBodyEl) return;
+  const row = messageBodyEl.insertRow(0);
+  row.classList.add("highlight");
+  const tc = row.insertCell(), tyc = row.insertCell(), idc = row.insertCell(), dlcc = row.insertCell(), dc = row.insertCell();
+  const ts = new Date(msg.timestamp);
+  tc.textContent = ts.toLocaleTimeString() + "." + String(ts.getMilliseconds()).padStart(3, "0");
+  tc.classList.add("timestamp");
+  tyc.textContent = msg.type.toUpperCase();
+  idc.textContent = msg.id || "---";
+  dlcc.textContent = msg.dlc !== null ? msg.dlc : "---";
+  dc.textContent = msg.data ? msg.data.join(" ") : "---";
+  if (msg.type === "error" || msg.type === "parse_error" || msg.type.includes("error")) {
+    row.classList.add("error");
+    dc.textContent = msg.raw || msg.message || "Error";
+  }
+  setTimeout(() => row.classList.remove("highlight"), 500);
+  while (messageBodyEl.rows.length > maxMessagesInTable2) {
+    messageBodyEl.deleteRow(-1);
+  }
+}
 function formatTimestampForFile(tsMs) {
   const d = new Date(tsMs);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}.${String(d.getMilliseconds()).padStart(3, "0")}`;
 }
-function saveDataToFile() {
-  if (loggedMessages.length === 0) {
+function saveDataToFileUI(messagesToSave, saveBtnEl) {
+  if (messagesToSave.length === 0) {
     alert("No messages to save.");
-    saveBtn.disabled = true;
+    if (saveBtnEl) saveBtnEl.disabled = true;
     return;
   }
-  const h = "Timestamp,Type,ID,DLC,Data\n";
-  const rs = loggedMessages.map((m) => {
-    const ts = formatTimestampForFile(m.timestamp);
-    const ty = m.type.toUpperCase();
+  const header = "Timestamp,Type,ID,DLC,Data\n";
+  const rows = messagesToSave.map((m) => {
+    const timestamp = formatTimestampForFile(m.timestamp);
+    const type = m.type.toUpperCase();
     const id = m.id || "";
-    const dl = m.dlc !== null ? m.dlc : "";
-    const da = m.data ? m.data.join(" ") : "";
-    const esc = (f) => String(f).includes(",") ? `"${String(f).replace(/"/g, '""')}"` : f;
-    return `${esc(ts)},${esc(ty)},${esc(id)},${esc(dl)},${esc(da)}`;
+    const dlc = m.dlc !== null ? m.dlc : "";
+    const data = m.data ? m.data.join(" ") : "";
+    const escapeCsvField = (field) => String(field).includes(",") ? `"${String(field).replace(/"/g, '""')}"` : field;
+    return `${escapeCsvField(timestamp)},${escapeCsvField(type)},${escapeCsvField(id)},${escapeCsvField(dlc)},${escapeCsvField(data)}`;
   }).join("\n");
-  const c = h + rs;
-  const b = new Blob([c], { type: "text/csv;charset=utf-8;" });
-  const l = document.createElement("a");
-  const u = URL.createObjectURL(b);
-  l.setAttribute("href", u);
-  const n = /* @__PURE__ */ new Date();
-  const fn = `can_trace_webusb_${n.getFullYear()}${String(n.getMonth() + 1).padStart(2, "0")}${String(n.getDate()).padStart(2, "0")}_${String(n.getHours()).padStart(2, "0")}${String(n.getMinutes()).padStart(2, "0")}${String(n.getSeconds()).padStart(2, "0")}.csv`;
-  l.setAttribute("download", fn);
-  l.style.visibility = "hidden";
-  document.body.appendChild(l);
-  l.click();
-  document.body.removeChild(l);
-  URL.revokeObjectURL(u);
+  const csvContent = header + rows;
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.setAttribute("href", url);
+  const now = /* @__PURE__ */ new Date();
+  const filename = `can_trace_webusb_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}.csv`;
+  link.setAttribute("download", filename);
+  link.style.visibility = "hidden";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
+const useSerial = "serial" in navigator;
+const serial = useSerial ? navigator.serial : serial$1;
+const connectBtn = document.getElementById("connect-btn");
+console.log("connectBtn", connectBtn);
+const disconnectBtn = document.getElementById("disconnect-btn");
+const clearLogBtn = document.getElementById("clear-log-btn");
+const saveBtn = document.getElementById("save-btn");
+const sendCanBtn = document.getElementById("send-can-btn");
+const canIdInput = document.getElementById("can-id-input");
+const canDlcInput = document.getElementById("can-dlc-input");
+const canDataInput = document.getElementById("can-data-input");
+const statusMessage = document.getElementById("status-message");
+const messageBody = document.getElementById("message-body");
+const VENDOR_ID = 1155;
+const PRODUCT_ID = 22336;
+const BAUD_RATE = 115200;
+let port;
+let reader;
+let writer;
+let keepReading = false;
+let lineBuffer = "";
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+let maxMessagesInTable = 200;
+let loggedMessages = [];
 async function writeToStream(command) {
   if (!writer) {
     console.error("Writer not available.");
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Error: Writer not available.",
+      port ? port.readable !== null : false,
+      loggedMessages.length
+    );
+    return;
+  }
+  if (command == null || typeof command !== "string") {
+    console.error("Invalid command type to send to stream (must be string):", command);
     return;
   }
   const data = encoder.encode(command + CR_CHAR);
   await writer.write(data);
-  console.log("Sent:", command);
+  console.log("Sent to Stream:", command);
+  const sentMsgPseudo = parseCanMessage(command);
+  const messageObjectToLog = sentMsgPseudo.type === "unknown" || sentMsgPseudo.type === "other" || sentMsgPseudo.type === "parse_error" ? {
+    raw: command,
+    type: "sent_cmd",
+    id: sentMsgPseudo.id || null,
+    dlc: sentMsgPseudo.dlc || null,
+    data: sentMsgPseudo.data && sentMsgPseudo.data.length > 0 ? sentMsgPseudo.data : [command],
+    timestamp: Date.now()
+  } : { ...sentMsgPseudo, type: `sent_${sentMsgPseudo.type}` };
+  loggedMessages.push(messageObjectToLog);
+  addMessageToTableUI(messageBody, messageObjectToLog, maxMessagesInTable);
+  updateStatusUI(
+    statusMessage,
+    connectBtn,
+    disconnectBtn,
+    saveBtn,
+    clearLogBtn,
+    sendCanBtn,
+    canIdInput,
+    canDlcInput,
+    canDataInput,
+    statusMessage.textContent,
+    // Keep current status text
+    port ? port.readable ? true : null : false,
+    // Current connection state
+    loggedMessages.length
+  );
+}
+async function sendCanMessageFromInput() {
+  const idStr = canIdInput.value.trim();
+  const dlcStr = canDlcInput.value.trim();
+  const dataStr = canDataInput.value.trim().replace(/\s/g, "");
+  const dlcNum = parseInt(dlcStr, 10);
+  if (!isValidHex(idStr, 3)) {
+    const errorMsg = { type: "error", message: "Invalid CAN ID: Must be 3 hex characters.", timestamp: Date.now() };
+    loggedMessages.push(errorMsg);
+    addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
+    console.warn("Invalid CAN ID:", idStr);
+    updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? port.readable ? true : null : false, loggedMessages.length);
+    return;
+  }
+  if (isNaN(dlcNum) || dlcNum < 0 || dlcNum > 8) {
+    const errorMsg = { type: "error", message: "Invalid CAN DLC: Must be a number 0-8.", timestamp: Date.now() };
+    loggedMessages.push(errorMsg);
+    addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
+    console.warn("Invalid CAN DLC:", dlcStr);
+    updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? port.readable ? true : null : false, loggedMessages.length);
+    return;
+  }
+  if (!isValidHex(dataStr, dlcNum * 2)) {
+    const errorMsg = { type: "error", message: `Invalid CAN Data: Must be ${dlcNum * 2} hex characters for DLC ${dlcNum}.`, timestamp: Date.now() };
+    loggedMessages.push(errorMsg);
+    addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
+    console.warn("Invalid CAN Data:", dataStr, "DLC:", dlcNum);
+    updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? port.readable ? true : null : false, loggedMessages.length);
+    return;
+  }
+  const command = constructCanFrameCommand(idStr, dlcNum, dataStr, false);
+  if (command) {
+    await writeToStream(command);
+  } else {
+    const errorMsg = { type: "error", message: "Failed to construct CAN command. Check inputs.", timestamp: Date.now() };
+    loggedMessages.push(errorMsg);
+    addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
+    console.error("Failed to construct CAN command with inputs:", idStr, dlcNum, dataStr);
+    updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? port.readable ? true : null : false, loggedMessages.length);
+  }
 }
 async function readLoop() {
   if (!port || !port.readable) {
@@ -653,8 +774,9 @@ async function readLoop() {
         lines.forEach((line) => {
           if (line.trim()) {
             const parsedMsg = parseCanMessage(line.trim());
+            loggedMessages.push(parsedMsg);
             if (parsedMsg.type.startsWith("can") || parsedMsg.type.startsWith("rtr") || parsedMsg.type === "status_flags" || parsedMsg.type.includes("error")) {
-              addMessageToTable(parsedMsg);
+              addMessageToTableUI(messageBody, parsedMsg, maxMessagesInTable);
             } else {
               console.log("Device Response:", line.trim());
             }
@@ -664,14 +786,35 @@ async function readLoop() {
         });
         if (lineBuffer.includes("\x07")) {
           console.error("Device Response: BELL (Error)");
-          addMessageToTable(parseCanMessage("\x07"));
+          const bellErrorMsg = parseCanMessage("\x07");
+          loggedMessages.push(bellErrorMsg);
+          addMessageToTableUI(messageBody, bellErrorMsg, maxMessagesInTable);
           lineBuffer = lineBuffer.replace("\x07", "");
+        }
+        if (lines.length > 0) {
+          updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, true, loggedMessages.length);
         }
       }
     }
   } catch (error) {
     console.error("Error in read loop:", error);
-    updateStatus(`Read loop error: ${error.message}`, false);
+    const errorMsg = { type: "error", message: `Read loop error: ${error.message}`, timestamp: Date.now() };
+    loggedMessages.push(errorMsg);
+    addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      `Read loop error: ${error.message}`,
+      false,
+      loggedMessages.length
+    );
   } finally {
     if (reader) {
       try {
@@ -686,18 +829,59 @@ async function readLoop() {
   }
   console.log("Read loop finished.");
   if (keepReading) {
-    updateStatus("Disconnected (Read loop ended unexpectedly)", false);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Disconnected (Read loop ended unexpectedly)",
+      false,
+      loggedMessages.length
+    );
     await disconnect();
   }
 }
 async function connect() {
-  updateStatus("Requesting port...", null);
+  updateStatusUI(
+    statusMessage,
+    connectBtn,
+    disconnectBtn,
+    saveBtn,
+    clearLogBtn,
+    sendCanBtn,
+    canIdInput,
+    canDlcInput,
+    canDataInput,
+    "Requesting port...",
+    null,
+    // connecting state
+    loggedMessages.length
+  );
   try {
     const filters = [{ usbVendorId: VENDOR_ID, usbProductId: PRODUCT_ID }];
     port = await serial.requestPort({ filters });
     console.log("Port selected:", port);
     await port.open({ baudRate: BAUD_RATE });
-    updateStatus("Port open, configuring CAN...", null);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Port open, configuring CAN...",
+      null,
+      // connecting state
+      loggedMessages.length
+    );
     writer = port.writable.getWriter();
     await new Promise((resolve) => setTimeout(resolve, 100));
     await writeToStream("");
@@ -706,12 +890,38 @@ async function connect() {
     await new Promise((resolve) => setTimeout(resolve, 50));
     await writeToStream(OPEN_CAN_CMD);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    updateStatus("Connected (500 kbit/s)", true);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Connected (500 kbit/s)",
+      true,
+      loggedMessages.length
+    );
     keepReading = true;
     readLoop();
   } catch (error) {
     console.error("Connection failed:", error);
-    updateStatus(`Connection failed: ${error.message}`, false);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      `Connection failed: ${error.message}`,
+      false,
+      loggedMessages.length
+    );
     if (writer) {
       try {
         writer.releaseLock();
@@ -741,10 +951,37 @@ async function connect() {
 async function disconnect() {
   keepReading = false;
   if (!port) {
-    updateStatus("Already disconnected", false);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Already disconnected",
+      false,
+      loggedMessages.length
+    );
     return;
   }
-  updateStatus("Disconnecting...", null);
+  updateStatusUI(
+    statusMessage,
+    connectBtn,
+    disconnectBtn,
+    saveBtn,
+    clearLogBtn,
+    sendCanBtn,
+    canIdInput,
+    canDlcInput,
+    canDataInput,
+    "Disconnecting...",
+    null,
+    // connecting state (or a dedicated 'disconnecting' state if desired)
+    loggedMessages.length
+  );
   if (writer) {
     try {
       await writeToStream(CLOSE_CAN_CMD);
@@ -768,7 +1005,21 @@ async function disconnect() {
     console.error("Error closing port:", error);
   } finally {
     port = null;
-    updateStatus("Disconnected", false);
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Disconnected",
+      false,
+      loggedMessages.length
+      // loggedMessages might have content to save
+    );
   }
 }
 connectBtn.addEventListener("click", connect);
@@ -777,24 +1028,65 @@ clearLogBtn.addEventListener("click", () => {
   if (messageBody) messageBody.innerHTML = "";
   loggedMessages = [];
   console.log("Log cleared.");
-  saveBtn.disabled = true;
-  clearLogBtn.disabled = true;
+  updateStatusUI(
+    statusMessage,
+    connectBtn,
+    disconnectBtn,
+    saveBtn,
+    clearLogBtn,
+    sendCanBtn,
+    canIdInput,
+    canDlcInput,
+    canDataInput,
+    "Log cleared.",
+    // Or keep existing status if preferred
+    port ? port.readable ? true : null : false,
+    // Current connection state
+    loggedMessages.length
+    // Will be 0
+  );
 });
-saveBtn.addEventListener("click", saveDataToFile);
+saveBtn.addEventListener("click", () => saveDataToFileUI(loggedMessages, saveBtn));
+sendCanBtn.addEventListener("click", sendCanMessageFromInput);
 window.addEventListener("beforeunload", async () => {
-  if (device) {
+  if (port && port.readable) {
     await disconnect();
   }
 });
 document.addEventListener("DOMContentLoaded", () => {
-  if (!navigator.usb) {
-    updateStatus("WebUSB API not supported.", false);
-    connectBtn.disabled = true;
-    saveBtn.disabled = true;
-    clearLogBtn.disabled = true;
+  const isSerialSupported = "serial" in navigator || "usb" in navigator;
+  if (!isSerialSupported) {
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Web Serial API not supported.",
+      false,
+      0
+      // No logged messages initially
+    );
   } else {
-    updateStatus("Disconnected", false);
-    saveBtn.disabled = true;
-    clearLogBtn.disabled = true;
+    updateStatusUI(
+      statusMessage,
+      connectBtn,
+      disconnectBtn,
+      saveBtn,
+      clearLogBtn,
+      sendCanBtn,
+      canIdInput,
+      canDlcInput,
+      canDataInput,
+      "Disconnected",
+      false,
+      // Initial state
+      0
+      // No logged messages initially
+    );
   }
 });
