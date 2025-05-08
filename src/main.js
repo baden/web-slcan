@@ -177,7 +177,8 @@ async function connect() {
     updateStatus("Requesting port...", null);
     try {
         const filters = [{ usbVendorId: VENDOR_ID, usbProductId: PRODUCT_ID }];
-        port = await serial.requestPort({ filters });
+        // port = await serial.requestPort({ filters });
+        port = await serial.requestPort();
         console.log("Port selected:", port);
 
         await port.open({ baudRate: BAUD_RATE });
