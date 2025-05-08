@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebUSB Minimal Claim Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        button { padding: 10px 15px; font-size: 1em; margin-bottom: 15px; }
+        #log { white-space: pre-wrap; border: 1px solid #ccc; padding: 10px; min-height: 100px; background-color: #f9f9f9; }
+        .success { color: green; }
+        .error { color: red; }
+        .info { color: blue; }
+    </style>
+</head>
+<body>
+    <h1>WebUSB Minimal Interface Claim Test</h1>
+    <p>Device Filter: Vendor ID 0x0483, Product ID 0x5740</p>
+    <button id="testButton">Request Device & Test Claim</button>
+    <div id="log">Test log will appear here...</div>
+
+    <script>
+        const VID = 0x0483;
+        const PID = 0x5740;
+        const CONTROL_INTERFACE_NUMBER = 0;
+        const DATA_INTERFACE_NUMBER = 1; // As per your descriptor
+
+        const testButton = document.getElementById('testButton');
+        const logElement = document.getElementById('log');
+
+        function logMessage(message, type = 'info') {
+            const p = document.createElement('p');
+            p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            p.className = type;
+            logElement.appendChild(p);
+            console.log(message); // Also log to browser console
+        }
+
+        async function runTest() {
+            logMessage("Starting test...", 'info');
+            if (!navigator.usb) {
+                logMessage("WebUSB API not supported in this browser.", 'error');
+                return;
+            }
+
+            let device;
+            try {
+                logMessage("Requesting USB device...", 'info');
+                device = await navigator.usb.requestDevice({ filters: [{ vendorId: VID, productId: PID }] });
+                if (!device) {
+                    logMessage("No device selected by user.", 'error');
+                    return;
+                }
+                logMessage(`Device selected: ${device.manufacturerName} - ${device.productName}`, 'success');
+
+                logMessage("Opening device...", 'info');
+                await device.open();
+                logMessage("Device opened.", 'success');
+
+                if (device.configuration === null) {
+                    logMessage("Device not configured. Selecting configuration 1...", 'info');
+                    await device.selectConfiguration(1);
+                    logMessage("Configuration 1 selected.", 'success');
+                } else {
+                    logMessage(`Device already in configuration: ${device.configuration.configurationValue}`, 'info');
+                }
+
+                logMessage(`Attempting to claim Interface ${CONTROL_INTERFACE_NUMBER} (Control)...`, 'info');
+                try {
+                    await device.claimInterface(CONTROL_INTERFACE_NUMBER);
+                    logMessage(`Interface ${CONTROL_INTERFACE_NUMBER} (Control) CLAIMED SUCCESSFULLY!`, 'success');
+                } catch (claimErrorControl) {
+                    logMessage(`FAILED to claim Interface ${CONTROL_INTERFACE_NUMBER} (Control): ${claimErrorControl.message}`, 'error');
+                    // Decide if you want to stop or try claiming the data interface anyway
+                    // For this test, we'll log the error and continue to try data interface if control fails
+                }
+
+                logMessage(`Attempting to claim Interface ${DATA_INTERFACE_NUMBER} (Data)...`, 'info');
+                try {
+                    await device.claimInterface(DATA_INTERFACE_NUMBER);
+                    logMessage(`Interface ${DATA_INTERFACE_NUMBER} (Data) CLAIMED SUCCESSFULLY!`, 'success');
+                } catch (claimErrorData) {
+                    logMessage(`FAILED to claim Interface ${DATA_INTERFACE_NUMBER} (Data): ${claimErrorData.message}`, 'error');
+                }
+
+                // Attempt to release interfaces if claimed, or if one was claimed
+                logMessage("Attempting to release interfaces (if claimed)...", 'info');
+                try {
+                    // Check if interface was actually claimed before trying to release,
+                    // though releasing an unclaimed interface might not always throw.
+                    // For simplicity here, just try to release.
+                    await device.releaseInterface(DATA_INTERFACE_NUMBER);
+                    logMessage(`Interface ${DATA_INTERFACE_NUMBER} (Data) released.`, 'info');
+                } catch (releaseErrorData) {
+                    logMessage(`Error releasing Interface ${DATA_INTERFACE_NUMBER} (Data): ${releaseErrorData.message} (might not have been claimed)`, 'info');
+                }
+                try {
+                    await device.releaseInterface(CONTROL_INTERFACE_NUMBER);
+                    logMessage(`Interface ${CONTROL_INTERFACE_NUMBER} (Control) released.`, 'info');
+                } catch (releaseErrorControl) {
+                    logMessage(`Error releasing Interface ${CONTROL_INTERFACE_NUMBER} (Control): ${releaseErrorControl.message} (might not have been claimed)`, 'info');
+                }
+
+
+            } catch (error) {
+                logMessage(`An unexpected error occurred: ${error.message}`, 'error');
+                console.error("Full error object:", error);
+            } finally {
+                if (device && device.opened) {
+                    try {
+                        logMessage("Closing device...", 'info');
+                        await device.close();
+                        logMessage("Device closed.", 'success');
+                    } catch (closeError) {
+                        logMessage(`Error closing device: ${closeError.message}`, 'error');
+                    }
+                }
+                logMessage("Test finished.", 'info');
+            }
+        }
+
+        testButton.addEventListener('click', runTest);
+
+    </script>
+</body>
+</html>
