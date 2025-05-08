@@ -13,6 +13,16 @@
         <button id="disconnect-btn" disabled>Disconnect</button>
         <button id="clear-log-btn" disabled>Clear Log</button>
         <button id="save-btn" disabled>Save Trace</button>
+        <hr>
+        <div>
+            <label for="can-id-input">ID (Hex, 3 chars):</label>
+            <input type="text" id="can-id-input" placeholder="1A3" maxlength="3" size="5" disabled>
+            <label for="can-dlc-input">DLC (0-8):</label>
+            <input type="number" id="can-dlc-input" placeholder="8" min="0" max="8" size="3" disabled>
+            <label for="can-data-input">Data (Hex):</label>
+            <input type="text" id="can-data-input" placeholder="001122EEFF" maxlength="16" size="20" disabled>
+            <button id="send-can-btn" disabled>Send CAN Message</button>
+        </div>
     </div>
     <div id="status">Status: <span id="status-message" class="status-disconnected">Disconnected</span></div>
     <div id="messages">

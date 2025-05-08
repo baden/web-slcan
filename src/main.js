@@ -15,6 +15,11 @@ console.log("connectBtn", connectBtn);
 const disconnectBtn = document.getElementById('disconnect-btn');
 const clearLogBtn = document.getElementById('clear-log-btn');
 const saveBtn = document.getElementById('save-btn');
+// const canMessageInput = document.getElementById('can-message-input'); // Old input
+const sendCanBtn = document.getElementById('send-can-btn');
+const canIdInput = document.getElementById('can-id-input');
+const canDlcInput = document.getElementById('can-dlc-input');
+const canDataInput = document.getElementById('can-data-input');
 const statusMessage = document.getElementById('status-message');
 const messageBody = document.getElementById('message-body');
 
@@ -50,18 +55,33 @@ function updateStatus(message, connectedState = null) {
         disconnectBtn.disabled = false;
         saveBtn.disabled = false;
         clearLogBtn.disabled = false;
+        sendCanBtn.disabled = false;
+        // canMessageInput.disabled = false; // Old input
+        canIdInput.disabled = false;
+        canDlcInput.disabled = false;
+        canDataInput.disabled = false;
     } else if (connectedState === false) {
         statusMessage.className = 'status-disconnected';
         connectBtn.disabled = false;
         disconnectBtn.disabled = true;
         saveBtn.disabled = (loggedMessages.length === 0);
         clearLogBtn.disabled = (loggedMessages.length === 0);
-    } else {
+        sendCanBtn.disabled = true;
+        // canMessageInput.disabled = true; // Old input
+        canIdInput.disabled = true;
+        canDlcInput.disabled = true;
+        canDataInput.disabled = true;
+    } else { // connecting
         statusMessage.className = 'status-connecting';
         connectBtn.disabled = true;
         disconnectBtn.disabled = true;
         saveBtn.disabled = true;
         clearLogBtn.disabled = true;
+        sendCanBtn.disabled = true;
+        // canMessageInput.disabled = true; // Old input
+        canIdInput.disabled = true;
+        canDlcInput.disabled = true;
+        canDataInput.disabled = true;
     }
 }
 
@@ -99,11 +119,97 @@ function saveDataToFile() { /* ... same ... */
 async function writeToStream(command) {
     if (!writer) {
         console.error("Writer not available.");
+        updateStatus("Error: Writer not available.", port ? port.readable !== null : false); // Update status reflecting current connection
         return;
     }
+    // Basic validation for CAN message format (e.g., t1238aabbccdd)
+    // Lawicel commands are typically single characters followed by parameters.
+    // For sending a CAN frame, it's 't' + ID (3 hex) + DLC (1 hex) + DATA (0-8 bytes hex)
+    // or 'T' + ID (8 hex) + DLC (1 hex) + DATA (0-8 bytes hex)
+    // This function now expects a fully formed Lawicel command string.
+    // Validation specific to ID/DLC/Data should happen before calling this.
+    if (!command || typeof command !== 'string' || command.length === 0) {
+        console.error("Invalid or empty command to send to stream.");
+        // Error already logged by caller, or this is an internal command
+        return;
+    }
+
     const data = encoder.encode(command + CR_CHAR); // Append CR to commands
     await writer.write(data);
-    console.log("Sent:", command);
+    console.log("Sent to Stream:", command);
+    // Log the sent message to the table for user visibility
+    // We need to parse it as if it were received to display it correctly.
+    // However, parseCanMessage expects device responses.
+    // For sent messages, we can construct a similar object or log raw.
+    // For now, let's add a simple "sent" type message.
+    // A more robust solution would be to parse the command we just built.
+    const sentMsgPseudo = parseCanMessage(command); // Attempt to parse for display
+    if (sentMsgPseudo.type === "unknown" || sentMsgPseudo.type === "other") { // If parseCanMessage didn't fully understand it as a CAN frame
+        addMessageToTable({
+            raw: command,
+            type: "sent_cmd", // Custom type for sent commands
+            id: null,
+            dlc: null,
+            data: [command],
+            timestamp: Date.now()
+        });
+    } else {
+         // If it was parsable as a CAN frame (e.g. t1234ABCD), show it properly
+        addMessageToTable({ ...sentMsgPseudo, type: `sent_${sentMsgPseudo.type}`});
+    }
+}
+
+function isValidHex(str, len = -1) {
+    if (typeof str !== 'string') return false;
+    const hexRegex = /^[0-9a-fA-F]+$/;
+    if (!hexRegex.test(str)) return false;
+    if (len !== -1 && str.length !== len) return false;
+    return true;
+}
+
+async function sendCanMessageFromInput() {
+    const idStr = canIdInput.value.trim();
+    const dlcStr = canDlcInput.value.trim();
+    const dataStr = canDataInput.value.trim().replace(/\s/g, ''); // Remove spaces from data
+
+    // Validate ID
+    if (!isValidHex(idStr, 3)) {
+        addMessageToTable({ type: "error", message: "Invalid CAN ID: Must be 3 hex characters.", timestamp: Date.now() });
+        console.warn("Invalid CAN ID:", idStr);
+        return;
+    }
+
+    // Validate DLC
+    const dlcNum = parseInt(dlcStr, 10); // DLC input is type number, but value is string
+    if (isNaN(dlcNum) || dlcNum < 0 || dlcNum > 8) {
+        addMessageToTable({ type: "error", message: "Invalid CAN DLC: Must be a number 0-8.", timestamp: Date.now() });
+        console.warn("Invalid CAN DLC:", dlcStr);
+        return;
+    }
+    const dlcHex = dlcNum.toString(16).toUpperCase(); // Convert to single hex char for command
+
+    // Validate Data
+    if (dataStr.length !== dlcNum * 2) {
+        addMessageToTable({ type: "error", message: `Invalid CAN Data: Length must be ${dlcNum * 2} hex characters for DLC ${dlcNum}.`, timestamp: Date.now() });
+        console.warn("Invalid CAN Data length:", dataStr);
+        return;
+    }
+    if (dlcNum > 0 && !isValidHex(dataStr)) { // only validate if data is expected
+        addMessageToTable({ type: "error", message: "Invalid CAN Data: Must be hex characters.", timestamp: Date.now() });
+        console.warn("Invalid CAN Data content:", dataStr);
+        return;
+    }
+
+    // Construct Lawicel command (assuming standard 't' frame for now)
+    // tIIILDD...
+    const command = `t${idStr.toUpperCase()}${dlcHex}${dataStr.toUpperCase()}`;
+
+    await writeToStream(command);
+
+    // Optionally clear inputs after sending
+    // canIdInput.value = '';
+    // canDlcInput.value = '';
+    // canDataInput.value = '';
 }
 
 async function readLoop() {
@@ -281,11 +387,16 @@ clearLogBtn.addEventListener('click', () => {
     console.log("Log cleared."); saveBtn.disabled = true; clearLogBtn.disabled = true;
 });
 saveBtn.addEventListener('click', saveDataToFile);
-window.addEventListener('beforeunload', async () => { if (device) { await disconnect(); } });
+sendCanBtn.addEventListener('click', sendCanMessageFromInput);
+
+window.addEventListener('beforeunload', async () => { if (port && port.readable) { await disconnect(); } }); // Check port.readable as a proxy for open port
 
 document.addEventListener('DOMContentLoaded', () => {
-      if (!navigator.usb) {
-          updateStatus("WebUSB API not supported.", false);
-          connectBtn.disabled = true; saveBtn.disabled = true; clearLogBtn.disabled = true;
-      } else { updateStatus("Disconnected", false); saveBtn.disabled = true; clearLogBtn.disabled = true;}
+      const isSerialSupported = ('serial' in navigator || 'usb' in navigator); 
+      if (!isSerialSupported) {
+          updateStatus("Web Serial API not supported.", false);
+          // All controls including new inputs will be disabled by updateStatus
+      } else {
+          updateStatus("Disconnected", false); // Initial state
+      }
 });
