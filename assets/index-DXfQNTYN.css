@@ -1,0 +1,96 @@
+
+/* ... (CSS styles remain the same as previous example) ... */
+body {
+  font-family: sans-serif;
+  margin: 20px;
+  line-height: 1.6;
+}
+
+button {
+  margin: 5px;
+  padding: 8px 15px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#controls button {
+  margin-bottom: 10px;
+}
+
+#status {
+  margin: 15px 0;
+  font-weight: bold;
+}
+
+#messages {
+  margin-top: 20px;
+  max-height: 60vh;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  padding: 10px;
+  min-height: 100px;
+  background: #f9f9f9;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+}
+
+th,
+td {
+  border: 1px solid #ddd;
+  padding: 6px;
+  text-align: left;
+  font-family: monospace;
+}
+
+th {
+  background-color: #e2e2e2;
+}
+
+.timestamp {
+  font-size: 0.8em;
+  color: #555;
+}
+
+.highlight {
+  background-color: #ffffdd !important;
+}
+
+.error {
+  color: red;
+  font-weight: bold;
+}
+
+.status-connected {
+  color: green;
+}
+
+.status-disconnected {
+  color: red;
+}
+
+.status-connecting {
+  color: orange;
+}
+
+.command-note {
+  font-size: 0.9em;
+  color: #444;
+  margin-top: 15px;
+}
+
+.warning {
+  color: #8a6d3b;
+  background-color: #fcf8e3;
+  border: 1px solid #faebcc;
+  padding: 10px;
+  margin-bottom: 15px;
+  border-radius: 4px;
+}
