@@ -83,11 +83,14 @@ async function writeToStream(command) {
     // or 'T' + ID (8 hex) + DLC (1 hex) + DATA (0-8 bytes hex)
     // This function now expects a fully formed Lawicel command string.
     // Validation specific to ID/DLC/Data should happen before calling this.
-    if (!command || typeof command !== 'string' || command.length === 0) {
-        console.error("Invalid or empty command to send to stream.");
+    // Allow empty string for sending just CR, but not null/undefined.
+    if (command == null || typeof command !== 'string') {
+        console.error("Invalid command type to send to stream (must be string):", command);
         // Error already logged by caller, or this is an internal command
         return;
     }
+    // The original check `!command || command.length === 0` would prevent sending just CR.
+    // Now, an empty string command will result in just CR_CHAR being encoded.
 
     const data = encoder.encode(command + CR_CHAR); // Append CR to commands
     await writer.write(data);
@@ -100,19 +103,27 @@ async function writeToStream(command) {
     // A more robust solution would be to parse the command we just built.
     // parseCanMessage is imported.
     const sentMsgPseudo = parseCanMessage(command); // Attempt to parse for display
-    // Call imported UI function
-    if (sentMsgPseudo.type === "unknown" || sentMsgPseudo.type === "other" || sentMsgPseudo.type === "parse_error") {
-        addMessageToTableUI(messageBody, {
+    const messageObjectToLog = sentMsgPseudo.type === "unknown" || sentMsgPseudo.type === "other" || sentMsgPseudo.type === "parse_error" ?
+        {
             raw: command,
             type: "sent_cmd",
             id: sentMsgPseudo.id || null,
             dlc: sentMsgPseudo.dlc || null,
             data: sentMsgPseudo.data && sentMsgPseudo.data.length > 0 ? sentMsgPseudo.data : [command],
             timestamp: Date.now()
-        }, maxMessagesInTable);
-    } else {
-        addMessageToTableUI(messageBody, { ...sentMsgPseudo, type: `sent_${sentMsgPseudo.type}`}, maxMessagesInTable);
-    }
+        } :
+        { ...sentMsgPseudo, type: `sent_${sentMsgPseudo.type}`};
+
+    loggedMessages.push(messageObjectToLog);
+    addMessageToTableUI(messageBody, messageObjectToLog, maxMessagesInTable);
+    // Update status to potentially re-enable save/clear buttons
+    updateStatusUI(
+        statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+        canIdInput, canDlcInput, canDataInput,
+        statusMessage.textContent, // Keep current status text
+        port ? (port.readable ? true : null) : false, // Current connection state
+        loggedMessages.length
+    );
 }
 
 // isValidHex is now imported from lawicel.js
@@ -127,20 +138,29 @@ async function sendCanMessageFromInput() {
 
     // Validate ID (length 3, hex) using imported isValidHex
     if (!isValidHex(idStr, 3)) {
-        addMessageToTableUI(messageBody, { type: "error", message: "Invalid CAN ID: Must be 3 hex characters.", timestamp: Date.now() }, maxMessagesInTable);
+        const errorMsg = { type: "error", message: "Invalid CAN ID: Must be 3 hex characters.", timestamp: Date.now() };
+        loggedMessages.push(errorMsg);
+        addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
         console.warn("Invalid CAN ID:", idStr);
+        updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? (port.readable ? true : null) : false, loggedMessages.length);
         return;
     }
     // Validate DLC (numeric, 0-8)
     if (isNaN(dlcNum) || dlcNum < 0 || dlcNum > 8) {
-        addMessageToTableUI(messageBody, { type: "error", message: "Invalid CAN DLC: Must be a number 0-8.", timestamp: Date.now() }, maxMessagesInTable);
+        const errorMsg = { type: "error", message: "Invalid CAN DLC: Must be a number 0-8.", timestamp: Date.now() };
+        loggedMessages.push(errorMsg);
+        addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
         console.warn("Invalid CAN DLC:", dlcStr);
+        updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? (port.readable ? true : null) : false, loggedMessages.length);
         return;
     }
     // Validate Data (hex, length matches DLC*2) using imported isValidHex
     if (!isValidHex(dataStr, dlcNum * 2)) {
-        addMessageToTableUI(messageBody, { type: "error", message: `Invalid CAN Data: Must be ${dlcNum*2} hex characters for DLC ${dlcNum}.`, timestamp: Date.now() }, maxMessagesInTable);
+        const errorMsg = { type: "error", message: `Invalid CAN Data: Must be ${dlcNum*2} hex characters for DLC ${dlcNum}.`, timestamp: Date.now() };
+        loggedMessages.push(errorMsg);
+        addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
         console.warn("Invalid CAN Data:", dataStr, "DLC:", dlcNum);
+        updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? (port.readable ? true : null) : false, loggedMessages.length);
         return;
     }
 
@@ -157,8 +177,11 @@ async function sendCanMessageFromInput() {
     } else {
         // This case should ideally be caught by the more specific validation above,
         // but constructCanFrameCommand also returns null on error if its internal checks fail.
-        addMessageToTableUI(messageBody, { type: "error", message: "Failed to construct CAN command. Check inputs.", timestamp: Date.now() }, maxMessagesInTable);
+        const errorMsg = { type: "error", message: "Failed to construct CAN command. Check inputs.", timestamp: Date.now() };
+        loggedMessages.push(errorMsg);
+        addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
         console.error("Failed to construct CAN command with inputs:", idStr, dlcNum, dataStr);
+        updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, port ? (port.readable ? true : null) : false, loggedMessages.length);
     }
 }
 
@@ -191,6 +214,7 @@ async function readLoop() {
                 lines.forEach(line => {
                     if (line.trim()) { // Ignore empty lines potentially created by split
                         const parsedMsg = parseCanMessage(line.trim()); // Imported from lawicel.js
+                        loggedMessages.push(parsedMsg); // Push to log
                         // Only log relevant messages to the table
                         if (parsedMsg.type.startsWith('can') || parsedMsg.type.startsWith('rtr') || parsedMsg.type === 'status_flags' || parsedMsg.type.includes('error')) {
                             addMessageToTableUI(messageBody, parsedMsg, maxMessagesInTable);
@@ -199,6 +223,10 @@ async function readLoop() {
                         }
                     } else {
                         // Received just CR, likely an OK response to a command
+                        // Optionally log CRs if needed for debugging, but usually not for main log
+                        // const crMsg = {type: "ok_response", raw: CR_CHAR, data: ["CR (OK)"], timestamp: Date.now()};
+                        // loggedMessages.push(crMsg);
+                        // addMessageToTableUI(messageBody, crMsg, maxMessagesInTable);
                         console.log("Device Response: CR (OK)");
                     }
                 });
@@ -206,13 +234,22 @@ async function readLoop() {
                   // Check for BELL character (\x07) which might not have CR
                   if (lineBuffer.includes('\x07')) {
                       console.error("Device Response: BELL (Error)");
-                      addMessageToTableUI(messageBody, parseCanMessage('\x07'), maxMessagesInTable); // Log error
+                      const bellErrorMsg = parseCanMessage('\x07');
+                      loggedMessages.push(bellErrorMsg);
+                      addMessageToTableUI(messageBody, bellErrorMsg, maxMessagesInTable); // Log error
                       lineBuffer = lineBuffer.replace('\x07', ''); // Remove it
                   }
-            }
-        }
+                // After processing a batch of lines from the current 'value', update the UI status for button states
+                if (lines.length > 0) { // 'lines' is in scope here
+                    updateStatusUI(statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn, canIdInput, canDlcInput, canDataInput, statusMessage.textContent, true, loggedMessages.length);
+                }
+            } // End of if (value)
+        } // End of while (keepReading)
     } catch (error) {
         console.error("Error in read loop:", error);
+        const errorMsg = { type: "error", message: `Read loop error: ${error.message}`, timestamp: Date.now() };
+        loggedMessages.push(errorMsg); // Log the error itself
+        addMessageToTableUI(messageBody, errorMsg, maxMessagesInTable);
         updateStatusUI(
             statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
             canIdInput, canDlcInput, canDataInput,
@@ -393,10 +430,14 @@ clearLogBtn.addEventListener('click', () => {
     if (messageBody) messageBody.innerHTML = '';
     loggedMessages = [];
     console.log("Log cleared.");
-    // Update button states directly or via updateStatusUI
-    saveBtn.disabled = true;
-    clearLogBtn.disabled = true;
-    // If disconnected, updateStatusUI would handle this. If connected, this is fine.
+    // Update button states via updateStatusUI to ensure consistency
+    updateStatusUI(
+        statusMessage, connectBtn, disconnectBtn, saveBtn, clearLogBtn, sendCanBtn,
+        canIdInput, canDlcInput, canDataInput,
+        "Log cleared.", // Or keep existing status if preferred
+        port ? (port.readable ? true : null) : false, // Current connection state
+        loggedMessages.length // Will be 0
+    );
 });
 
 saveBtn.addEventListener('click', () => saveDataToFileUI(loggedMessages, saveBtn));
