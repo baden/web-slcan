@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebUSB CANUSB Trace (STM32 CDC)</title>
+    <script type="module" crossorigin src="/assets/index-fVT59R1g.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-B-N-ZsRG.css">
+  </head>
+  <body>
+    <h1>WebUSB CANUSB Trace (STM32 CDC)</h1>
+    <div id="controls">
+        <button id="connect-btn">Request Device & Connect</button>
+        <button id="disconnect-btn" disabled>Disconnect</button>
+        <button id="clear-log-btn" disabled>Clear Log</button>
+        <button id="save-btn" disabled>Save Trace</button>
+    </div>
+    <div id="status">Status: <span id="status-message" class="status-disconnected">Disconnected</span></div>
+    <div id="messages">
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>ID</th>
+                    <th>DLC</th>
+                    <th>Data</th>
+                </tr>
+            </thead>
+            <tbody id="message-body">
+            </tbody>
+        </table>
+    </div>
+
+    <div class="command-note">
+        Configuration: Serial 115200 baud (via CDC), CAN 500 kbit/s (S6).
+    </div>
+
+  </body>
+</html>
